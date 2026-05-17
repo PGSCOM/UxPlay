@@ -1,0 +1,496 @@
+# ============================================================
+# GitHub Actions – Build UxPlay
+# Repository: https://github.com/FDH2/UxPlay
+#
+# Platforms built:
+#   • Linux   – Ubuntu 22.04 x86-64
+#   • macOS   – Apple Silicon arm64  (macos-latest)
+#   • macOS   – Intel x86-64         (macos-13)
+#   • Windows – x86-64, MSYS2 UCRT64
+#
+# On every push / PR → compile and upload artifacts.
+# On a version tag (v*) → also create a GitHub Release with
+# the binaries attached as zip files.
+#
+# ── Windows / Bonjour SDK note ────────────────────────────────
+# The Bonjour SDK (Apple proprietary) is needed at *build* time
+# for the dns_sd.h header and dnssd.lib import library.
+# This workflow bootstraps both without the installer:
+#   1. dns_sd.h  ← Apple's open-source mDNSResponder (GitHub)
+#   2. dnssd.lib ← generated with dlltool from a .def file
+# The actual dnssd.dll *runtime* is NOT bundled; end-users must
+# install "Bonjour for Windows" (free – comes with iTunes or at
+# https://support.apple.com/kb/DL999).
+# ─────────────────────────────────────────────────────────────
+# ============================================================
+
+name: Build UxPlay
+
+on:
+  push:
+    branches: [ master ]
+    tags:     [ 'v*' ]
+  pull_request:
+    branches: [ master ]
+  workflow_dispatch:
+
+# Needed so the release job can create a GitHub Release
+permissions:
+  contents: write
+
+# ─────────────────────────────────────────────────────────────
+# Shared build flag used by every cmake call.
+# -DNO_MARCH_NATIVE=ON → portable binary (no host-specific ISA).
+# ─────────────────────────────────────────────────────────────
+env:
+  CMAKE_COMMON_FLAGS: >-
+    -DCMAKE_BUILD_TYPE=Release
+    -DNO_MARCH_NATIVE=ON
+
+jobs:
+
+  # ═══════════════════════════════════════════════════════════
+  # Linux – Ubuntu 22.04 x86-64
+  # ═══════════════════════════════════════════════════════════
+  build-linux:
+    name: Linux (Ubuntu 22.04 x64)
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            cmake build-essential pkg-config \
+            libssl-dev \
+            libplist-dev \
+            libavahi-compat-libdnssd-dev \
+            libgstreamer1.0-dev \
+            libgstreamer-plugins-base1.0-dev \
+            libx11-dev
+
+      - name: Configure
+        run: cmake -B build ${{ env.CMAKE_COMMON_FLAGS }}
+
+      - name: Build
+        run: cmake --build build --parallel $(nproc)
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: uxplay-linux-x64
+          path: build/uxplay
+          if-no-files-found: error
+
+  # ═══════════════════════════════════════════════════════════
+  # macOS – Apple Silicon (arm64)
+  # ═══════════════════════════════════════════════════════════
+  build-macos-arm64:
+    name: macOS arm64 (Apple Silicon)
+    runs-on: macos-latest      # arm64 since GitHub switched default in 2024
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Homebrew)
+        run: |
+          brew update
+          brew install \
+            cmake \
+            openssl \
+            libplist \
+            gstreamer \
+            gst-plugins-base \
+            gst-plugins-good \
+            gst-plugins-bad \
+            gst-libav
+
+      - name: Configure
+        # CMakeLists.txt already adds Homebrew's PKG_CONFIG_PATH for Apple.
+        # Export it explicitly as a safety net for edge-case Homebrew layouts.
+        run: |
+          export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig:$PKG_CONFIG_PATH"
+          cmake -B build ${{ env.CMAKE_COMMON_FLAGS }}
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: uxplay-macos-arm64
+          path: build/uxplay
+          if-no-files-found: error
+
+  # ═══════════════════════════════════════════════════════════
+  # macOS – Intel x86-64
+  # ═══════════════════════════════════════════════════════════
+  build-macos-x64:
+    name: macOS x64 (Intel)
+    runs-on: macos-13           # last GitHub-hosted x86-64 macOS runner
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Homebrew)
+        run: |
+          brew update
+          brew install \
+            cmake \
+            openssl \
+            libplist \
+            gstreamer \
+            gst-plugins-base \
+            gst-plugins-good \
+            gst-plugins-bad \
+            gst-libav
+
+      - name: Configure
+        run: |
+          export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig:$PKG_CONFIG_PATH"
+          cmake -B build ${{ env.CMAKE_COMMON_FLAGS }}
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: uxplay-macos-x64
+          path: build/uxplay
+          if-no-files-found: error
+
+  # ═══════════════════════════════════════════════════════════
+  # Windows – x86-64 via MSYS2 UCRT64
+  # ═══════════════════════════════════════════════════════════
+  build-windows:
+    name: Windows x64 (MSYS2 UCRT64)
+    runs-on: windows-latest
+
+    # All "run" steps execute inside the MSYS2 UCRT64 shell
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Install MSYS2 and all build/runtime dependencies ──────
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            git
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-openssl
+            mingw-w64-ucrt-x86_64-libplist
+            mingw-w64-ucrt-x86_64-gstreamer
+            mingw-w64-ucrt-x86_64-gst-plugins-base
+            mingw-w64-ucrt-x86_64-gst-plugins-good
+            mingw-w64-ucrt-x86_64-gst-plugins-bad
+            mingw-w64-ucrt-x86_64-gst-libav
+            mingw-w64-ucrt-x86_64-ntldd-git
+
+      # ── Bootstrap Bonjour SDK without the proprietary installer ──
+      #
+      # Build-time only. We need:
+      #   • dns_sd.h     → fetched from Apple's open-source mDNSResponder.
+      #   • dnssd.lib    → import library generated with dlltool from a .def.
+      #
+      # Runtime: the real dnssd.dll ships with "Bonjour for Windows"
+      # (free, https://support.apple.com/kb/DL999). It is NOT bundled here.
+      # ─────────────────────────────────────────────────────────────
+      - name: Bootstrap Bonjour SDK (headers + import lib)
+        run: |
+          set -euo pipefail
+
+          SDK_DIR="/c/Program Files/Bonjour SDK"
+          INCLUDE_DIR="${SDK_DIR}/Include"
+          LIB_DIR="${SDK_DIR}/Lib/x64"
+
+          mkdir -p "${INCLUDE_DIR}" "${LIB_DIR}"
+
+          # 1. Fetch dns_sd.h from Apple's OSS mDNSResponder (MIT/APSL licensed)
+          echo "Fetching dns_sd.h from Apple OSS mDNSResponder…"
+          curl -fsSL \
+            "https://raw.githubusercontent.com/apple-oss-distributions/mDNSResponder/main/mDNSShared/dns_sd.h" \
+            -o "${INCLUDE_DIR}/dns_sd.h"
+
+          # 2. Write a .def file with every public symbol UxPlay (and any
+          #    future caller) might need from dnssd.dll.
+          cat > /tmp/dnssd.def << 'EOF'
+          LIBRARY dnssd
+          EXPORTS
+            DNSServiceRegister
+            DNSServiceRefDeallocate
+            DNSServiceRefSockFD
+            DNSServiceProcessResult
+            DNSServiceBrowse
+            DNSServiceResolve
+            DNSServiceQueryRecord
+            DNSServiceGetAddrInfo
+            DNSServiceEnumerateDomains
+            DNSServiceCreateConnection
+            DNSServiceRegisterRecord
+            DNSServiceUpdateRecord
+            DNSServiceRemoveRecord
+            DNSServiceReconfirmRecord
+            TXTRecordCreate
+            TXTRecordDeallocate
+            TXTRecordSetValue
+            TXTRecordRemoveValue
+            TXTRecordGetLength
+            TXTRecordGetBytesPtr
+            TXTRecordGetCount
+            TXTRecordGetItemAtIndex
+            TXTRecordContainsKey
+            TXTRecordGetValuePtr
+          EOF
+
+          # 3. Generate the import library (satisfies the linker; no code)
+          dlltool \
+            --dllname dnssd.dll \
+            --def /tmp/dnssd.def \
+            --output-lib "${LIB_DIR}/dnssd.lib" \
+            --target x86_64-w64-mingw32
+
+          echo "Bonjour SDK bootstrapped:"
+          ls -lh "${INCLUDE_DIR}/dns_sd.h"
+          ls -lh "${LIB_DIR}/dnssd.lib"
+
+      # ── CMake configure + build ───────────────────────────────
+      - name: Configure
+        run: |
+          # BONJOUR_SDK_HOME tells CMakeLists.txt where to find the SDK.
+          # Use forward slashes – CMake accepts them on Windows.
+          export BONJOUR_SDK_HOME="C:/Program Files/Bonjour SDK"
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DNO_MARCH_NATIVE=ON
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      # ── Bundle uxplay.exe + all runtime DLLs ─────────────────
+      #
+      # ntldd -R gives the full recursive dependency tree.
+      # We keep only DLLs that live inside the MSYS2/UCRT64 tree
+      # (system DLLs like kernel32, ntdll, etc. are excluded).
+      # GStreamer plugins are copied into lib/gstreamer-1.0/ so
+      # uxplay.exe can find them without modifying GST_PLUGIN_PATH.
+      # ─────────────────────────────────────────────────────────
+      - name: Collect runtime DLLs and GStreamer plugins
+        run: |
+          set -euo pipefail
+
+          DIST="dist"
+          GST_PLUGIN_SRC="/ucrt64/lib/gstreamer-1.0"
+          GST_PLUGIN_DST="${DIST}/lib/gstreamer-1.0"
+
+          mkdir -p "${DIST}" "${GST_PLUGIN_DST}"
+
+          # Copy the main executable
+          cp build/uxplay.exe "${DIST}/"
+
+          # Helper: copy all MSYS2-owned DLLs an executable depends on
+          collect_msys2_dlls() {
+            local src="$1"
+            ntldd -R "${src}" 2>/dev/null \
+              | grep -iE '/(ucrt64|mingw64|msys64)/' \
+              | awk '{print $3}' \
+              | sort -u \
+              | while IFS= read -r dll; do
+                  [ -f "${dll}" ] && cp -n "${dll}" "${DIST}/" 2>/dev/null || true
+                done
+          }
+
+          # DLLs for the main executable
+          collect_msys2_dlls build/uxplay.exe
+
+          # GStreamer plugins
+          cp "${GST_PLUGIN_SRC}"/*.dll "${GST_PLUGIN_DST}/" 2>/dev/null || true
+
+          # DLLs that the plugins themselves pull in
+          for plugin in "${GST_PLUGIN_DST}"/*.dll; do
+            collect_msys2_dlls "${plugin}"
+          done
+
+          # Summary
+          echo "── dist/ ──────────────────────────────────────"
+          ls -lh "${DIST}"/*.dll "${DIST}"/*.exe 2>/dev/null | tail -5
+          echo "  ($(ls "${DIST}"/*.dll 2>/dev/null | wc -l) DLLs total)"
+          echo "── dist/lib/gstreamer-1.0/ ────────────────────"
+          echo "  $(ls "${GST_PLUGIN_DST}"/*.dll 2>/dev/null | wc -l) plugins"
+
+      # Include a short README so users know what dnssd.dll is
+      - name: Write Windows README
+        run: |
+          cat > dist/README-WINDOWS.txt << 'EOF'
+          UxPlay – Windows x64 build
+          ===========================
+
+          Requirements
+          ------------
+          1. Bonjour for Windows (dnssd.dll runtime)
+             Install "Bonjour for Windows" (free) from:
+             https://support.apple.com/kb/DL999
+             Or install iTunes, which bundles Bonjour.
+             The file dnssd.dll is NOT included here due to Apple's license.
+
+          2. Windows Firewall
+             On first launch, Windows will ask to allow uxplay.exe through
+             the firewall. Accept for both private and public networks.
+
+          Usage
+          -----
+          Open a terminal (cmd / PowerShell / Windows Terminal) and run:
+
+              uxplay.exe
+
+          Recommended options for Windows:
+              uxplay.exe -vs d3d12videosink    (Direct3D 12 renderer)
+              uxplay.exe -vs d3d11videosink    (fallback for older NVIDIA)
+              uxplay.exe -as wasapisink        (WASAPI audio)
+
+          Full documentation: https://github.com/FDH2/UxPlay/blob/master/README.md
+          EOF
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: uxplay-windows-x64
+          path: dist/
+          if-no-files-found: error
+
+  # ═══════════════════════════════════════════════════════════
+  # Release – triggered only on version tags (v*)
+  # Creates a GitHub Release and attaches the platform zips.
+  # ═══════════════════════════════════════════════════════════
+  release:
+    name: Create GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs:
+      - build-linux
+      - build-macos-arm64
+      - build-macos-x64
+      - build-windows
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0       # needed for changelog generation
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts/
+
+      - name: Package each platform as a zip
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"   # e.g. v1.73.6
+          cd artifacts
+
+          # ── Linux ──────────────────────────────────────────────
+          zip -j "uxplay-${TAG}-linux-x64.zip" \
+            uxplay-linux-x64/uxplay
+
+          # ── macOS arm64 ────────────────────────────────────────
+          zip -j "uxplay-${TAG}-macos-arm64.zip" \
+            uxplay-macos-arm64/uxplay
+
+          # ── macOS x64 ──────────────────────────────────────────
+          zip -j "uxplay-${TAG}-macos-x64.zip" \
+            uxplay-macos-x64/uxplay
+
+          # ── Windows (exe + DLLs + plugins + README) ────────────
+          cd uxplay-windows-x64
+          zip -r "../uxplay-${TAG}-windows-x64.zip" .
+          cd ..
+
+          # Show final sizes
+          ls -lh *.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "UxPlay ${{ github.ref_name }}"
+          draft: false
+          prerelease: >-
+            ${{
+              contains(github.ref_name, 'alpha') ||
+              contains(github.ref_name, 'beta')  ||
+              contains(github.ref_name, 'rc')
+            }}
+          generate_release_notes: true
+          files: |
+            artifacts/uxplay-${{ github.ref_name }}-linux-x64.zip
+            artifacts/uxplay-${{ github.ref_name }}-macos-arm64.zip
+            artifacts/uxplay-${{ github.ref_name }}-macos-x64.zip
+            artifacts/uxplay-${{ github.ref_name }}-windows-x64.zip
+          body: |
+            ## Pre-built binaries for UxPlay ${{ github.ref_name }}
+
+            | Platform | File | Notes |
+            |---|---|---|
+            | Linux x64 | `uxplay-${{ github.ref_name }}-linux-x64.zip` | Ubuntu 22.04+ / Debian 12+ |
+            | macOS arm64 | `uxplay-${{ github.ref_name }}-macos-arm64.zip` | Apple Silicon M1/M2/M3 |
+            | macOS x64 | `uxplay-${{ github.ref_name }}-macos-x64.zip` | Intel Mac |
+            | Windows x64 | `uxplay-${{ github.ref_name }}-windows-x64.zip` | Windows 10/11 64-bit |
+
+            ---
+
+            ### Linux (Ubuntu / Debian)
+
+            Install the GStreamer and Avahi runtime packages, then extract and run:
+
+            ```bash
+            sudo apt install \
+              libavahi-compat-libdnssd-dev \
+              gstreamer1.0-plugins-base \
+              gstreamer1.0-plugins-good \
+              gstreamer1.0-plugins-bad \
+              gstreamer1.0-libav
+            unzip uxplay-${{ github.ref_name }}-linux-x64.zip
+            ./uxplay
+            ```
+
+            ### macOS (Homebrew)
+
+            GStreamer must be installed via Homebrew:
+
+            ```bash
+            brew install gstreamer gst-plugins-base gst-plugins-good \
+                         gst-plugins-bad gst-libav
+            unzip uxplay-${{ github.ref_name }}-macos-arm64.zip   # or -x64
+            ./uxplay
+            ```
+
+            > **Note:** For the best macOS experience, you can also build from source
+            > against the [official GStreamer framework](https://gstreamer.freedesktop.org/download/#macos).
+
+            ### Windows
+
+            1. Install **[Bonjour for Windows](https://support.apple.com/kb/DL999)**
+               (free, required for AirPlay service discovery – not included due to
+               Apple's license). iTunes also provides it.
+            2. Extract the zip anywhere.
+            3. Open a terminal in the extracted folder and run:
+
+            ```cmd
+            uxplay.exe -vs d3d12videosink -as wasapisink
+            ```
+
+            4. Accept the Windows Firewall prompt on first launch.
+
+            > See `README-WINDOWS.txt` inside the zip for more details.
+
+            ---
+
+            **Full documentation:** https://github.com/FDH2/UxPlay/blob/master/README.md
